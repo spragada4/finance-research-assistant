@@ -1,13 +1,11 @@
 # src/app.py
 
+import re
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
 import yfinance as yf
-import pandas as pd
 from qa import load_qa_chain, ask
 from watchlist import (
-    load_watchlist,
     add_to_watchlist,
     remove_from_watchlist,
     check_alerts,
@@ -21,7 +19,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── LOAD CHAIN ──────────────────────────────────────────────
+# ── LOAD QA CHAIN ────────────────────────────────────────────
 @st.cache_resource
 def get_chain():
     with st.spinner("Loading models and knowledge base..."):
@@ -30,90 +28,69 @@ def get_chain():
 retriever_llm = get_chain()
 
 
-# ── CHART HELPERS ────────────────────────────────────────────
+# ── CHART FUNCTIONS ──────────────────────────────────────────
 
-def render_candlestick_chart(ticker: str):
-    """Render a 6-month candlestick chart with SMA overlays."""
+def render_candlestick(ticker: str):
+    """6-month candlestick with SMA20 + SMA50."""
     try:
-        hist = yf.Ticker(ticker).history(period="6mo")
+        hist  = yf.Ticker(ticker).history(period="6mo")
         if hist.empty:
-            st.caption("Chart data unavailable.")
+            st.caption("Chart unavailable.")
             return
-
         close  = hist["Close"]
         sma_20 = close.rolling(20).mean()
         sma_50 = close.rolling(50).mean()
 
         fig = go.Figure()
-
         fig.add_trace(go.Candlestick(
             x=hist.index,
-            open=hist["Open"],
-            high=hist["High"],
-            low=hist["Low"],
-            close=hist["Close"],
+            open=hist["Open"], high=hist["High"],
+            low=hist["Low"],   close=hist["Close"],
             name=ticker,
             increasing_line_color="#02C39A",
             decreasing_line_color="#EF4444",
         ))
-
         fig.add_trace(go.Scatter(
-            x=hist.index, y=sma_20,
-            mode="lines", name="SMA 20",
+            x=hist.index, y=sma_20, mode="lines", name="SMA 20",
             line=dict(color="#F59E0B", width=1.5, dash="dot"),
         ))
-
         fig.add_trace(go.Scatter(
-            x=hist.index, y=sma_50,
-            mode="lines", name="SMA 50",
+            x=hist.index, y=sma_50, mode="lines", name="SMA 50",
             line=dict(color="#818CF8", width=1.5, dash="dash"),
         ))
-
         fig.update_layout(
-            title=f"{ticker} — 6 Month Price Chart",
-            xaxis_title="Date",
-            yaxis_title="Price",
-            height=380,
-            xaxis_rangeslider_visible=False,
+            title=f"{ticker} — 6 Month Price",
+            height=360,
             template="plotly_dark",
+            xaxis_rangeslider_visible=False,
             legend=dict(orientation="h", yanchor="bottom", y=1.0),
             margin=dict(l=40, r=20, t=60, b=40),
         )
-
         st.plotly_chart(fig, use_container_width=True)
-
     except Exception as e:
         st.caption(f"Chart unavailable: {e}")
 
 
-def render_rsi_chart(ticker: str):
-    """Render RSI chart with overbought/oversold zones."""
+def render_rsi(ticker: str):
+    """RSI chart with overbought/oversold zones."""
     try:
         hist  = yf.Ticker(ticker).history(period="6mo")
         close = hist["Close"]
-
         delta = close.diff()
         gain  = delta.where(delta > 0, 0.0).rolling(14).mean()
         loss  = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
-        rs    = gain / loss
-        rsi   = 100 - (100 / (1 + rs))
+        rsi   = 100 - (100 / (1 + gain / loss))
 
         fig = go.Figure()
-
         fig.add_trace(go.Scatter(
-            x=hist.index, y=rsi,
-            mode="lines", name="RSI (14)",
-            line=dict(color="#02C39A", width=2),
+            x=hist.index, y=rsi, mode="lines",
+            name="RSI", line=dict(color="#02C39A", width=2),
         ))
-
-        # Overbought / oversold zones
-        fig.add_hline(y=70, line_dash="dash",
-                      line_color="#EF4444", annotation_text="Overbought (70)")
-        fig.add_hline(y=30, line_dash="dash",
-                      line_color="#22C55E", annotation_text="Oversold (30)")
-        fig.add_hline(y=50, line_dash="dot",
-                      line_color="#94A3B8", annotation_text="Midline")
-
+        fig.add_hline(y=70, line_dash="dash", line_color="#EF4444",
+                      annotation_text="Overbought (70)")
+        fig.add_hline(y=30, line_dash="dash", line_color="#22C55E",
+                      annotation_text="Oversold (30)")
+        fig.add_hline(y=50, line_dash="dot",  line_color="#94A3B8")
         fig.update_layout(
             title=f"{ticker} — RSI (14)",
             yaxis=dict(range=[0, 100]),
@@ -121,71 +98,223 @@ def render_rsi_chart(ticker: str):
             template="plotly_dark",
             margin=dict(l=40, r=20, t=50, b=30),
         )
-
         st.plotly_chart(fig, use_container_width=True)
-
     except Exception as e:
-        st.caption(f"RSI chart unavailable: {e}")
+        st.caption(f"RSI unavailable: {e}")
 
 
-def render_score_gauge(score: float, label: str):
-    """Render a gauge chart for the composite score."""
+def render_gauge(score: float, title: str):
+    """Generic 0-100 gauge chart."""
     color = (
-        "#22C55E" if score >= 70 else
-        "#F59E0B" if score >= 50 else
+        "#22C55E" if score >= 65 else
+        "#84CC16" if score >= 55 else
+        "#F59E0B" if score >= 45 else
+        "#F97316" if score >= 35 else
         "#EF4444"
     )
-
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
-        title={"text": label, "font": {"size": 14}},
+        title={"text": title, "font": {"size": 13}},
         gauge={
-            "axis":  {"range": [0, 100]},
-            "bar":   {"color": color},
+            "axis": {"range": [0, 100]},
+            "bar":  {"color": color},
             "steps": [
-                {"range": [0,  40],  "color": "#1E293B"},
-                {"range": [40, 60],  "color": "#1E3A5F"},
-                {"range": [60, 100], "color": "#164E3B"},
+                {"range": [0,  30],  "color": "#450a0a"},
+                {"range": [30, 45],  "color": "#431407"},
+                {"range": [45, 55],  "color": "#1c1917"},
+                {"range": [55, 70],  "color": "#052e16"},
+                {"range": [70, 100], "color": "#064e3b"},
             ],
-            "threshold": {
-                "line":  {"color": "white", "width": 2},
-                "thickness": 0.75,
-                "value": score,
-            },
         },
-        number={"suffix": "/100", "font": {"size": 28}},
+        number={"suffix": "/100", "font": {"size": 24}},
     ))
-
     fig.update_layout(
-        height=220,
+        height=200,
         template="plotly_dark",
-        margin=dict(l=20, r=20, t=40, b=20),
+        margin=dict(l=20, r=20, t=40, b=10),
     )
-
     st.plotly_chart(fig, use_container_width=True)
 
 
-# ── SIDEBAR ─────────────────────────────────────────────────
+def render_bull_bear_bar(bullish_pct: float, bearish_pct: float, ticker: str):
+    """Horizontal stacked bull/bear bar for StockTwits."""
+    neutral_pct = max(0.0, 100.0 - bullish_pct - bearish_pct)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Bullish", y=["StockTwits"], x=[bullish_pct],
+        orientation="h", marker_color="#22C55E",
+        text=[f"{bullish_pct}%"], textposition="inside",
+    ))
+    fig.add_trace(go.Bar(
+        name="Neutral", y=["StockTwits"], x=[neutral_pct],
+        orientation="h", marker_color="#64748B",
+        text=[f"{neutral_pct:.0f}%"], textposition="inside",
+    ))
+    fig.add_trace(go.Bar(
+        name="Bearish", y=["StockTwits"], x=[bearish_pct],
+        orientation="h", marker_color="#EF4444",
+        text=[f"{bearish_pct}%"], textposition="inside",
+    ))
+    fig.update_layout(
+        barmode="stack",
+        title=f"{ticker} — StockTwits Bull/Bear Ratio",
+        height=150,
+        template="plotly_dark",
+        showlegend=True,
+        margin=dict(l=20, r=20, t=40, b=20),
+        xaxis=dict(range=[0, 100]),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_sentiment_section(sentiment_data: dict, ticker: str):
+    """Render all sentiment components for a ticker."""
+    if not sentiment_data or ticker not in sentiment_data:
+        st.caption("Sentiment data not available for this query.")
+        return
+
+    sent   = sentiment_data[ticker]
+    comp   = sent.get("composite", {})
+    st_d   = sent.get("stocktwits", {})
+    fg     = sent.get("fear_greed", {})
+    trends = sent.get("trends", {})
+    poly   = sent.get("polymarket", {})
+
+    st.markdown(f"#### 🧠 Public Sentiment — {ticker}")
+
+    # Three gauges — StockTwits, Fear & Greed, Google Trends
+    # Plus overall composite
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        render_gauge(comp.get("composite", 50), "Overall Sentiment")
+    with c2:
+        render_gauge(
+            comp.get("breakdown", {}).get("stocktwits", 50),
+            "StockTwits (40%)"
+        )
+    with c3:
+        render_gauge(
+            comp.get("breakdown", {}).get("fear_greed", 50),
+            "Fear & Greed (35%)"
+        )
+    with c4:
+        render_gauge(
+            comp.get("breakdown", {}).get("trends", 50),
+            "Google Trends (25%)"
+        )
+
+    # Overall label
+    st.markdown(
+        f"**Overall Signal:** {comp.get('label', 'N/A')}  "
+        f"— Score: **{comp.get('composite', 'N/A')}/100**"
+    )
+    st.caption(
+        "⚠️ High bullish sentiment can signal a crowded trade. "
+        "Always use alongside fundamentals and technicals."
+    )
+
+    st.divider()
+
+    # StockTwits detail
+    st.markdown("**📊 StockTwits**")
+    if st_d.get("available") and st_d.get("bullish_pct") is not None:
+        render_bull_bear_bar(
+            st_d["bullish_pct"],
+            st_d["bearish_pct"],
+            ticker,
+        )
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Bullish",  f"{st_d['bullish_pct']}%")
+        col2.metric("Bearish",  f"{st_d['bearish_pct']}%")
+        col3.metric("Messages", st_d["total_msgs"])
+        st.caption(f"Signal: **{st_d['signal']}** | VADER avg: {st_d.get('vader_avg', 'N/A')}")
+    else:
+        st.caption(f"StockTwits: {st_d.get('note', 'Unavailable')}")
+
+    st.divider()
+
+    # Fear & Greed detail
+    st.markdown("**😨 CNN Fear & Greed Index**")
+    if fg.get("available"):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Score",      f"{fg['score']}/100")
+        col2.metric("Label",      fg["label"])
+        col3.metric("vs Last Week", f"{fg['prev_week']}")
+        st.info(fg.get("context", ""))
+        st.caption(
+            f"Direction: {fg['direction']} | "
+            f"vs last month: {fg['prev_month']}"
+        )
+    else:
+        st.caption(f"Fear & Greed: {fg.get('note', 'Unavailable')}")
+
+    st.divider()
+
+    # Google Trends detail
+    st.markdown("**🔍 Google Trends**")
+    if trends.get("available"):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Current Interest", f"{trends['current']}/100")
+        col2.metric("4-Week Avg",        f"{trends['avg_4w']}")
+        col3.metric("12-Week Avg",        f"{trends['avg_12w']}")
+        st.caption(trends["trend"])
+        st.caption("Note: 100 = peak search interest for this keyword. Relative scale only.")
+    else:
+        st.caption(f"Google Trends: {trends.get('note', 'Unavailable')}")
+
+    st.divider()
+
+    # Polymarket
+    st.markdown("**🎯 Polymarket Prediction Markets**")
+    if poly.get("found") and poly.get("markets"):
+        for market in poly["markets"][:3]:
+            st.markdown(f"**{market['question']}**")
+            for outcome, prob in market.get("outcomes", []):
+                color = (
+                    "green"  if prob > 60 else
+                    "red"    if prob < 40 else
+                    "orange"
+                )
+                st.markdown(f"  :{color}[{outcome}: {prob}%]")
+            if market.get("url"):
+                st.caption(f"[View on Polymarket]({market['url']})")
+    elif poly.get("available"):
+        st.caption(f"No active prediction markets found for {ticker}.")
+    else:
+        st.caption(f"Polymarket: {poly.get('note', 'Unavailable')}")
+
+
+# ── SIDEBAR ──────────────────────────────────────────────────
 with st.sidebar:
     st.title("📈 Finance Research")
     st.caption("Llama 3.1 + yfinance — fully local")
 
     st.divider()
 
-    # Disclaimer
     st.markdown("### ⚠️ Disclaimer")
     st.warning(
         "**Research tool only.** Nothing here is financial advice. "
-        "Consult an FCA-authorised advisor before investing."
+        "Always consult an FCA-authorised advisor before investing."
     )
 
     st.divider()
 
-    # Watchlist management
-    st.markdown("### 👀 Watchlist")
+    # Settings
+    st.markdown("### ⚙️ Settings")
+    include_sentiment = st.toggle(
+        "🧠 Include Sentiment Analysis",
+        value=True,
+        help=(
+            "Adds ~10s but includes StockTwits, "
+            "Fear & Greed, Google Trends and Polymarket"
+        ),
+    )
 
-    # Check alerts
+    st.divider()
+
+    # Watchlist
+    st.markdown("### 👀 Watchlist")
     alerts = check_alerts()
     if alerts:
         st.markdown("**🔔 Active Alerts**")
@@ -195,14 +324,13 @@ with st.sidebar:
             else:
                 st.error(alert["message"])
 
-    # Watchlist table
     wl_data = get_watchlist_snapshot()
     if wl_data:
         for row in wl_data:
             col1, col2 = st.columns([3, 1])
             col1.markdown(
-                f"**{row['ticker']}** — {row['price']} {row['currency']}"
-                f"\n\n*{row['recommendation']}*"
+                f"**{row['ticker']}** — {row['price']} {row['currency']}\n\n"
+                f"*{row['recommendation']}*"
             )
             if col2.button("🗑️", key=f"rm_{row['ticker']}"):
                 remove_from_watchlist(row["ticker"])
@@ -210,12 +338,11 @@ with st.sidebar:
     else:
         st.caption("No stocks in watchlist yet.")
 
-    # Add to watchlist
     with st.expander("➕ Add to Watchlist"):
-        new_ticker = st.text_input("Ticker (e.g. AAPL, LLOY.L)")
-        col1, col2 = st.columns(2)
-        alert_below = col1.number_input("Alert below", value=0.0, min_value=0.0)
-        alert_above = col2.number_input("Alert above", value=0.0, min_value=0.0)
+        new_ticker  = st.text_input("Ticker (e.g. AAPL, LLOY.L)")
+        c1, c2      = st.columns(2)
+        alert_below = c1.number_input("Alert below", value=0.0, min_value=0.0)
+        alert_above = c2.number_input("Alert above", value=0.0, min_value=0.0)
         if st.button("Add", use_container_width=True) and new_ticker:
             msg = add_to_watchlist(
                 new_ticker.strip().upper(),
@@ -230,14 +357,14 @@ with st.sidebar:
     # Example questions
     st.markdown("### 💡 Try These")
     examples = [
-        "What is Apple's current P/E ratio?",
-        "Analyse NVIDIA for me",
+        "Analyse Apple for me",
+        "What is NVIDIA's current position?",
         "Compare Tesla and Ford",
         "What is Lloyds Bank current price?",
+        "Is HSBC overbought or oversold?",
         "Explain what RSI means",
         "What is dollar cost averaging?",
         "What do analysts think about Microsoft?",
-        "Is HSBC overbought or oversold?",
     ]
     for ex in examples:
         if st.button(ex, use_container_width=True, key=f"ex_{ex}"):
@@ -248,42 +375,46 @@ with st.sidebar:
 st.title("📈 Finance Research Assistant")
 st.caption(
     "Ask questions about stocks, markets, ratios, and strategies. "
-    "Live data fetched from Yahoo Finance per query."
+    "Live data + sentiment fetched per query."
 )
 st.info(
     "🔒 Fully local — your questions never leave your machine. "
-    "Live prices fetched from public Yahoo Finance API.",
+    "Live data fetched from public APIs per query.",
     icon="🔒",
 )
 
-# ── SESSION STATE ────────────────────────────────────────────
+# ── SESSION STATE ─────────────────────────────────────────────
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "pending_question" not in st.session_state:
     st.session_state.pending_question = None
 
-# ── RENDER HISTORY ───────────────────────────────────────────
+# ── RENDER HISTORY ────────────────────────────────────────────
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-        # Show charts for historical ticker messages
         if msg.get("tickers"):
             st.caption(f"📊 Data fetched for: {', '.join(msg['tickers'])}")
             for ticker in msg["tickers"]:
-                with st.expander(f"📉 Charts — {ticker}"):
-                    render_candlestick_chart(ticker)
-                    render_rsi_chart(ticker)
+                with st.expander(f"📊 Analysis — {ticker}"):
+                    tab1, tab2, tab3 = st.tabs([
+                        "📈 Price Charts", "🧠 Sentiment", "📡 Raw Data"
+                    ])
+                    with tab1:
+                        render_candlestick(ticker)
+                        render_rsi(ticker)
+                    with tab2:
+                        render_sentiment_section(
+                            msg.get("sentiment_data", {}), ticker
+                        )
+                    with tab3:
+                        st.code(msg.get("live_data", ""))
 
         if msg.get("sources"):
             with st.expander("📚 Knowledge Base Sources"):
                 for src in msg["sources"]:
                     st.markdown(f"- {src}")
-
-        if (msg.get("live_data") and
-                msg["live_data"] != "No specific stock ticker detected in this question."):
-            with st.expander("📡 Raw Market Data"):
-                st.code(msg["live_data"])
 
 # ── HANDLE SIDEBAR BUTTONS ───────────────────────────────────
 pending = st.session_state.pop("pending_question", None)
@@ -295,57 +426,63 @@ question = (
 )
 
 if question:
-    # User message
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
 
-    # Assistant response
     with st.chat_message("assistant"):
-        with st.spinner("Fetching live data, calculating signals, generating research..."):
-            result = ask(retriever_llm, question)
+        with st.spinner(
+            "Fetching live data, calculating signals"
+            + (", gathering sentiment..." if include_sentiment else "...")
+        ):
+            result = ask(retriever_llm, question, include_sentiment=include_sentiment)
 
         st.markdown(result["answer"])
 
-        # Charts if tickers detected
         if result.get("tickers"):
-            st.caption(f"📊 Live data fetched for: {', '.join(result['tickers'])}")
-            for ticker in result["tickers"]:
-                with st.expander(f"📉 Charts — {ticker}"):
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
-                        render_candlestick_chart(ticker)
-                    with col2:
-                        # Extract composite score from live_data if available
-                        import re
-                        score_match = re.search(
-                            r"Composite Research Score: (\d+\.?\d*)/100",
-                            result.get("live_data", "")
-                        )
-                        if score_match:
-                            render_score_gauge(
-                                float(score_match.group(1)),
-                                f"{ticker} Research Score"
-                            )
-                    render_rsi_chart(ticker)
+            st.caption(f"📊 Data fetched for: {', '.join(result['tickers'])}")
 
-        # Sources
+            for ticker in result["tickers"]:
+                with st.expander(f"📊 Full Analysis — {ticker}", expanded=True):
+                    tab1, tab2, tab3 = st.tabs([
+                        "📈 Price Charts", "🧠 Sentiment", "📡 Raw Data"
+                    ])
+
+                    with tab1:
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            render_candlestick(ticker)
+                        with col2:
+                            score_match = re.search(
+                                r"Composite Research Score: (\d+\.?\d*)/100",
+                                result.get("live_data", "")
+                            )
+                            if score_match:
+                                render_gauge(
+                                    float(score_match.group(1)),
+                                    f"{ticker} Research Score"
+                                )
+                        render_rsi(ticker)
+
+                    with tab2:
+                        render_sentiment_section(
+                            result.get("sentiment_data", {}),
+                            ticker,
+                        )
+
+                    with tab3:
+                        st.code(result.get("live_data", ""))
+
         if result.get("sources"):
             with st.expander("📚 Knowledge Base Sources"):
                 for src in result["sources"]:
                     st.markdown(f"- {src}")
 
-        # Raw data
-        if (result.get("live_data") and
-                result["live_data"] != "No specific stock ticker detected in this question."):
-            with st.expander("📡 Raw Market Data"):
-                st.code(result["live_data"])
-
-    # Save to history
     st.session_state.messages.append({
-        "role":      "assistant",
-        "content":   result["answer"],
-        "sources":   result.get("sources", []),
-        "tickers":   result.get("tickers", []),
-        "live_data": result.get("live_data", ""),
+        "role":           "assistant",
+        "content":        result["answer"],
+        "sources":        result.get("sources", []),
+        "tickers":        result.get("tickers", []),
+        "live_data":      result.get("live_data", ""),
+        "sentiment_data": result.get("sentiment_data", {}),
     })

@@ -1,9 +1,9 @@
 # src/live_data.py
 
 import re
-import numpy as np
 import yfinance as yf
 from datetime import datetime
+from sentiment import get_full_sentiment, format_sentiment_context
 
 # ── TICKER DETECTION ────────────────────────────────────────
 
@@ -16,62 +16,60 @@ TICKER_BLACKLIST = {
 }
 
 COMPANY_NAME_MAP = {
-    "apple":         "AAPL",
-    "microsoft":     "MSFT",
-    "google":        "GOOGL",
-    "alphabet":      "GOOGL",
-    "amazon":        "AMZN",
-    "tesla":         "TSLA",
-    "nvidia":        "NVDA",
-    "meta":          "META",
-    "facebook":      "META",
-    "netflix":       "NFLX",
-    "barclays":      "BARC.L",
-    "lloyds":        "LLOY.L",
-    "hsbc":          "HSBA.L",
-    "bp":            "BP.L",
-    "shell":         "SHEL.L",
-    "vodafone":      "VOD.L",
-    "astrazeneca":   "AZN.L",
-    "tesco":         "TSCO.L",
-    "rolls royce":   "RR.L",
-    "natwest":       "NWG.L",
-    "aviva":         "AV.L",
-    "diageo":        "DGE.L",
-    "unilever":      "ULVR.L",
-    "gsk":           "GSK.L",
-    "rio tinto":     "RIO.L",
-    "bt":            "BT-A.L",
-    "marks spencer": "MKS.L",
-    "sainsbury":     "SBRY.L",
-    "next":          "NXT.L",
+    "apple":              "AAPL",
+    "microsoft":          "MSFT",
+    "google":             "GOOGL",
+    "alphabet":           "GOOGL",
+    "amazon":             "AMZN",
+    "tesla":              "TSLA",
+    "nvidia":             "NVDA",
+    "meta":               "META",
+    "facebook":           "META",
+    "netflix":            "NFLX",
+    "barclays":           "BARC.L",
+    "lloyds":             "LLOY.L",
+    "hsbc":               "HSBA.L",
+    "bp":                 "BP.L",
+    "shell":              "SHEL.L",
+    "vodafone":           "VOD.L",
+    "astrazeneca":        "AZN.L",
+    "tesco":              "TSCO.L",
+    "rolls royce":        "RR.L",
+    "natwest":            "NWG.L",
+    "aviva":              "AV.L",
+    "diageo":             "DGE.L",
+    "unilever":           "ULVR.L",
+    "gsk":                "GSK.L",
+    "rio tinto":          "RIO.L",
+    "bt":                 "BT-A.L",
+    "marks spencer":      "MKS.L",
+    "sainsbury":          "SBRY.L",
+    "next":               "NXT.L",
     "standard chartered": "STAN.L",
 }
+
 
 def detect_tickers(question: str) -> list:
     """Detect stock tickers from a natural language question."""
     tickers = []
 
-    # $TICKER format
     dollar_matches = re.findall(r'\$([A-Z]{1,5})', question)
     tickers.extend(dollar_matches)
 
-    # ALL CAPS 2-5 char words not in blacklist
     upper_matches = re.findall(r'\b([A-Z]{2,5})\b', question)
     for m in upper_matches:
         if m not in TICKER_BLACKLIST and m not in tickers:
             tickers.append(m)
 
-    # Company name → ticker
     question_lower = question.lower()
     for name, ticker in COMPANY_NAME_MAP.items():
         if name in question_lower and ticker not in tickers:
             tickers.append(ticker)
 
-    return tickers[:2]  # max 2 stocks per query
+    return tickers[:2]
 
 
-# ── PRICE & FUNDAMENTALS ────────────────────────────────────
+# ── UTILITIES ───────────────────────────────────────────────
 
 def format_large_number(n) -> str:
     if n is None:
@@ -88,6 +86,8 @@ def format_large_number(n) -> str:
     except:
         return str(n)
 
+
+# ── FUNDAMENTALS ────────────────────────────────────────────
 
 def get_stock_snapshot(ticker: str) -> dict:
     """Fetch current fundamentals and analyst data."""
@@ -184,13 +184,10 @@ def get_recent_news(ticker: str) -> str:
         return f"Could not fetch news: {e}"
 
 
-# ── TECHNICAL INDICATORS ────────────────────────────────────
+# ── TECHNICALS ──────────────────────────────────────────────
 
 def calculate_technicals(ticker: str) -> dict:
-    """
-    Calculate RSI, MACD, Bollinger Bands, and Moving Averages.
-    Returns signals and interpreted plain-English conclusions.
-    """
+    """Calculate RSI, MACD, Bollinger Bands, Moving Averages."""
     try:
         hist = yf.Ticker(ticker).history(period="6mo")
 
@@ -200,45 +197,40 @@ def calculate_technicals(ticker: str) -> dict:
         close   = hist["Close"]
         current = close.iloc[-1]
 
-        # ── Moving Averages ───────────────────────────────
         sma_20 = close.rolling(window=20).mean().iloc[-1]
         sma_50 = close.rolling(window=50).mean().iloc[-1] if len(close) >= 50 else None
         ema_12 = close.ewm(span=12, adjust=False).mean().iloc[-1]
         ema_26 = close.ewm(span=26, adjust=False).mean().iloc[-1]
 
-        # ── RSI (14-period) ───────────────────────────────
         delta  = close.diff()
         gain   = delta.where(delta > 0, 0.0).rolling(14).mean()
         loss   = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
         rs     = gain / loss
         rsi    = float((100 - (100 / (1 + rs))).iloc[-1])
 
-        # ── MACD ─────────────────────────────────────────
         macd_line   = float(ema_12 - ema_26)
         signal_line = float(
-            close.ewm(span=12, adjust=False).mean().ewm(span=26, adjust=False).mean()
+            close.ewm(span=12, adjust=False).mean()
+            .ewm(span=26, adjust=False).mean()
             .ewm(span=9, adjust=False).mean().iloc[-1]
         )
         macd_hist = macd_line - signal_line
 
-        # ── Bollinger Bands (20-day) ──────────────────────
-        sma_series  = close.rolling(20).mean()
-        std_series  = close.rolling(20).std()
-        upper_band  = float((sma_series + 2 * std_series).iloc[-1])
-        lower_band  = float((sma_series - 2 * std_series).iloc[-1])
+        sma_series = close.rolling(20).mean()
+        std_series = close.rolling(20).std()
+        upper_band = float((sma_series + 2 * std_series).iloc[-1])
+        lower_band = float((sma_series - 2 * std_series).iloc[-1])
 
-        # ── Volume trend ──────────────────────────────────
-        avg_vol_20  = hist["Volume"].rolling(20).mean().iloc[-1]
-        latest_vol  = hist["Volume"].iloc[-1]
-        vol_signal  = (
+        avg_vol_20 = hist["Volume"].rolling(20).mean().iloc[-1]
+        latest_vol = hist["Volume"].iloc[-1]
+        vol_signal = (
             "Above average — strong conviction in recent move"
-            if latest_vol > avg_vol_20 * 1.2
-            else "Below average — weak conviction in recent move"
-            if latest_vol < avg_vol_20 * 0.8
-            else "Average — no notable volume divergence"
+            if latest_vol > avg_vol_20 * 1.2 else
+            "Below average — weak conviction in recent move"
+            if latest_vol < avg_vol_20 * 0.8 else
+            "Average — no notable volume divergence"
         )
 
-        # ── Interpret signals ─────────────────────────────
         rsi_signal = (
             "Oversold (below 30) — historically a potential mean-reversion zone"
             if rsi < 30 else
@@ -301,15 +293,10 @@ def calculate_technicals(ticker: str) -> dict:
 # ── COMPOSITE SCORING ───────────────────────────────────────
 
 def calculate_composite_score(snapshot: dict, technicals: dict) -> dict:
-    """
-    Score a stock 0-100 across 5 dimensions.
-    Returns score, signal label, breakdown, and reasons.
-    NOT a buy/sell recommendation — a structured research summary.
-    """
+    """Score a stock 0-100 across 5 dimensions."""
     scores  = {}
     reasons = []
 
-    # ── 1. Valuation (P/E ratio) ──────────────────────────
     try:
         pe = float(snapshot.get("pe_ratio", 0) or 0)
         if 0 < pe < 15:
@@ -331,7 +318,6 @@ def calculate_composite_score(snapshot: dict, technicals: dict) -> dict:
         scores["valuation"] = 50
         reasons.append("P/E not available")
 
-    # ── 2. Momentum (RSI) ─────────────────────────────────
     rsi = technicals.get("rsi", 50)
     if isinstance(rsi, (int, float)):
         if rsi < 30:
@@ -352,7 +338,6 @@ def calculate_composite_score(snapshot: dict, technicals: dict) -> dict:
     else:
         scores["momentum"] = 50
 
-    # ── 3. Trend (Moving Averages) ────────────────────────
     ma_signal = technicals.get("ma_signal", "")
     if "Bullish" in str(ma_signal):
         scores["trend"] = 75
@@ -364,14 +349,13 @@ def calculate_composite_score(snapshot: dict, technicals: dict) -> dict:
         scores["trend"] = 50
         reasons.append("Mixed trend — no clear directional signal from MAs")
 
-    # ── 4. Analyst Consensus ──────────────────────────────
     rec = str(snapshot.get("recommendation", "")).upper()
     rec_score_map = {
-        "STRONG BUY": 90,
-        "BUY":        75,
-        "HOLD":       50,
+        "STRONG BUY":   90,
+        "BUY":          75,
+        "HOLD":         50,
         "UNDERPERFORM": 30,
-        "SELL":       15,
+        "SELL":         15,
     }
     scores["analyst"] = rec_score_map.get(rec, 50)
     reasons.append(
@@ -379,7 +363,6 @@ def calculate_composite_score(snapshot: dict, technicals: dict) -> dict:
         f"(target: {snapshot.get('analyst_target', 'N/A')})"
     )
 
-    # ── 5. Income / Dividend ──────────────────────────────
     div = str(snapshot.get("dividend_yield", "None"))
     if div not in ("None", "N/A", "0.0%", ""):
         scores["income"] = 70
@@ -388,27 +371,26 @@ def calculate_composite_score(snapshot: dict, technicals: dict) -> dict:
         scores["income"] = 40
         reasons.append("No dividend — purely a growth/capital gain play")
 
-    # ── Composite ─────────────────────────────────────────
     composite = round(sum(scores.values()) / len(scores), 1)
-
-    if composite >= 70:
-        signal = "Strong research interest — multiple positive signals"
-    elif composite >= 55:
-        signal = "Moderate research interest — mixed signals overall"
-    elif composite >= 40:
-        signal = "Cautious signals — more negative than positive indicators"
-    else:
-        signal = "Weak signals — most indicators pointing negatively"
+    signal = (
+        "Strong research interest — multiple positive signals"
+        if composite >= 70 else
+        "Moderate research interest — mixed signals overall"
+        if composite >= 55 else
+        "Cautious signals — more negative than positive indicators"
+        if composite >= 40 else
+        "Weak signals — most indicators pointing negatively"
+    )
 
     return {
         "composite_score": composite,
         "signal":          signal,
         "breakdown": {
-            "Valuation":  scores["valuation"],
-            "Momentum":   scores["momentum"],
-            "Trend":      scores["trend"],
-            "Analyst":    scores["analyst"],
-            "Income":     scores["income"],
+            "Valuation": scores["valuation"],
+            "Momentum":  scores["momentum"],
+            "Trend":     scores["trend"],
+            "Analyst":   scores["analyst"],
+            "Income":    scores["income"],
         },
         "reasons": reasons,
     }
@@ -416,24 +398,43 @@ def calculate_composite_score(snapshot: dict, technicals: dict) -> dict:
 
 # ── FULL CONTEXT BUILDER ────────────────────────────────────
 
-def format_live_context(tickers: list) -> str:
-    """Build complete formatted context for all detected tickers."""
+def format_live_context(
+    tickers:           list,
+    include_sentiment: bool = True,
+) -> tuple:
+    """
+    Build complete context string + sentiment data dict.
+    Returns (context_str, sentiment_dict).
+    """
     if not tickers:
-        return "No specific stock ticker detected in this question."
+        return "No specific stock ticker detected in this question.", {}
 
-    sections = []
+    sections       = []
+    all_sentiments = {}
 
     for ticker in tickers:
-        snap        = get_stock_snapshot(ticker)
-        history     = get_price_history(ticker)
-        news        = get_recent_news(ticker)
-        technicals  = calculate_technicals(ticker)
-        score_data  = calculate_composite_score(snap, technicals)
+        snap       = get_stock_snapshot(ticker)
+        history    = get_price_history(ticker)
+        news       = get_recent_news(ticker)
+        technicals = calculate_technicals(ticker)
+        score_data = calculate_composite_score(snap, technicals)
 
         if "error" in snap:
             sections.append(f"[{ticker}] Could not fetch data: {snap['error']}")
             continue
 
+        # ── Sentiment ─────────────────────────────────────
+        sentiment_context = ""
+        if include_sentiment:
+            try:
+                company = (snap.get("name") or "").split(" ")[0]
+                sent    = get_full_sentiment(ticker, company)
+                all_sentiments[ticker] = sent
+                sentiment_context = format_sentiment_context(sent)
+            except Exception as e:
+                sentiment_context = f"\nSentiment unavailable: {e}"
+
+        # ── Technicals section ────────────────────────────
         tech_section = ""
         if "error" not in technicals:
             tech_section = f"""
@@ -448,6 +449,7 @@ Technical Indicators:
         else:
             tech_section = f"\nTechnical Indicators: {technicals.get('error')}"
 
+        # ── Score section ─────────────────────────────────
         score_section = f"""
 Composite Research Score: {score_data['composite_score']}/100
 Signal: {score_data['signal']}
@@ -483,8 +485,9 @@ Price History:      {history}
 {score_section}
 Recent News:
 {news}
+{sentiment_context}
 Data fetched: {snap['fetched_at']}
 """
         sections.append(section)
 
-    return "\n".join(sections)
+    return "\n".join(sections), all_sentiments

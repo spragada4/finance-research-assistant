@@ -124,11 +124,15 @@ def load_qa_chain():
     return retriever, llm
 
 
-def ask(retriever_llm_tuple, question: str) -> dict:
+def ask(
+    retriever_llm_tuple,
+    question:           str,
+    include_sentiment:  bool = True,
+) -> dict:
     """
     Full pipeline:
     1. Detect tickers
-    2. Fetch live data + technicals + composite score
+    2. Fetch live data + technicals + composite scores + sentiment
     3. Retrieve knowledge base chunks
     4. Build structured prompt and invoke LLM
     5. Return answer + sources + metadata
@@ -138,26 +142,29 @@ def ask(retriever_llm_tuple, question: str) -> dict:
     # Step 1 — detect tickers
     tickers = detect_tickers(question)
 
-    # Step 2 — fetch live data (includes technicals and scores)
-    live_data = format_live_context(tickers)
+    # Step 2 — fetch live data + sentiment
+    live_data_str, sentiment_data = format_live_context(
+        tickers,
+        include_sentiment=include_sentiment,
+    )
 
     # Step 3 — retrieve knowledge base
     source_docs = retriever.invoke(question)
     sources     = list({doc.metadata.get("source", "Unknown") for doc in source_docs})
     context     = format_docs(source_docs)
 
-    # Step 4 — build and invoke prompt
+    # Step 4 — invoke LLM
     prompt = FINANCE_PROMPT.format(
         context=context,
-        live_data=live_data,
+        live_data=live_data_str,
         question=question,
     )
-    raw_answer = llm.invoke(prompt)
-    answer     = raw_answer + DISCLAIMER
+    answer = llm.invoke(prompt) + DISCLAIMER
 
     return {
-        "answer":    answer,
-        "sources":   sources,
-        "tickers":   tickers,
-        "live_data": live_data,
+        "answer":         answer,
+        "sources":        sources,
+        "tickers":        tickers,
+        "live_data":      live_data_str,
+        "sentiment_data": sentiment_data,
     }
