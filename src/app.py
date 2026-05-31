@@ -294,9 +294,15 @@ with st.sidebar:
 
     st.markdown("### ⚠️ Disclaimer")
     st.warning(
-        "**Research tool only.** Nothing here is financial advice. "
-        "Always consult an FCA-authorised advisor before investing."
-    )
+    "**Research tool only — not financial advice.**\n\n"
+    "This tool provides publicly available market data and "
+    "AI-generated research summaries for informational purposes. "
+    "It does not constitute investment advice, a personal recommendation, "
+    "or a solicitation to buy or sell any security. "
+    "The tool is not FCA-authorised and its output must not be relied "
+    "upon as the basis for any investment decision. "
+    "Always consult a qualified, FCA-authorised financial adviser."
+)
 
     st.divider()
 
