@@ -3,6 +3,8 @@
 import re
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.express as px
+import pandas as pd
 import yfinance as yf
 from qa import load_qa_chain, ask
 from watchlist import (
@@ -31,7 +33,6 @@ retriever_llm = get_chain()
 # ── CHART FUNCTIONS ──────────────────────────────────────────
 
 def render_candlestick(ticker: str):
-    """6-month candlestick with SMA20 + SMA50."""
     try:
         hist  = yf.Ticker(ticker).history(period="6mo")
         if hist.empty:
@@ -72,7 +73,6 @@ def render_candlestick(ticker: str):
 
 
 def render_rsi(ticker: str):
-    """RSI chart with overbought/oversold zones."""
     try:
         hist  = yf.Ticker(ticker).history(period="6mo")
         close = hist["Close"]
@@ -104,7 +104,6 @@ def render_rsi(ticker: str):
 
 
 def render_gauge(score: float, title: str):
-    """Generic 0-100 gauge chart."""
     color = (
         "#22C55E" if score >= 65 else
         "#84CC16" if score >= 55 else
@@ -138,7 +137,6 @@ def render_gauge(score: float, title: str):
 
 
 def render_bull_bear_bar(bullish_pct: float, bearish_pct: float, ticker: str):
-    """Horizontal stacked bull/bear bar for StockTwits."""
     neutral_pct = max(0.0, 100.0 - bullish_pct - bearish_pct)
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -169,7 +167,6 @@ def render_bull_bear_bar(bullish_pct: float, bearish_pct: float, ticker: str):
 
 
 def render_sentiment_section(sentiment_data: dict, ticker: str):
-    """Render all sentiment components for a ticker."""
     if not sentiment_data or ticker not in sentiment_data:
         st.caption("Sentiment data not available for this query.")
         return
@@ -183,28 +180,16 @@ def render_sentiment_section(sentiment_data: dict, ticker: str):
 
     st.markdown(f"#### 🧠 Public Sentiment — {ticker}")
 
-    # Three gauges — StockTwits, Fear & Greed, Google Trends
-    # Plus overall composite
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         render_gauge(comp.get("composite", 50), "Overall Sentiment")
     with c2:
-        render_gauge(
-            comp.get("breakdown", {}).get("stocktwits", 50),
-            "StockTwits (40%)"
-        )
+        render_gauge(comp.get("breakdown", {}).get("stocktwits", 50), "StockTwits (40%)")
     with c3:
-        render_gauge(
-            comp.get("breakdown", {}).get("fear_greed", 50),
-            "Fear & Greed (35%)"
-        )
+        render_gauge(comp.get("breakdown", {}).get("fear_greed", 50), "Fear & Greed (35%)")
     with c4:
-        render_gauge(
-            comp.get("breakdown", {}).get("trends", 50),
-            "Google Trends (25%)"
-        )
+        render_gauge(comp.get("breakdown", {}).get("trends", 50), "Google Trends (25%)")
 
-    # Overall label
     st.markdown(
         f"**Overall Signal:** {comp.get('label', 'N/A')}  "
         f"— Score: **{comp.get('composite', 'N/A')}/100**"
@@ -213,117 +198,185 @@ def render_sentiment_section(sentiment_data: dict, ticker: str):
         "⚠️ High bullish sentiment can signal a crowded trade. "
         "Always use alongside fundamentals and technicals."
     )
-
     st.divider()
 
-    # StockTwits detail
     st.markdown("**📊 StockTwits**")
     if st_d.get("available") and st_d.get("bullish_pct") is not None:
-        render_bull_bear_bar(
-            st_d["bullish_pct"],
-            st_d["bearish_pct"],
-            ticker,
-        )
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Bullish",  f"{st_d['bullish_pct']}%")
-        col2.metric("Bearish",  f"{st_d['bearish_pct']}%")
-        col3.metric("Messages", st_d["total_msgs"])
-        st.caption(f"Signal: **{st_d['signal']}** | VADER avg: {st_d.get('vader_avg', 'N/A')}")
+        render_bull_bear_bar(st_d["bullish_pct"], st_d["bearish_pct"], ticker)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Bullish",  f"{st_d['bullish_pct']}%")
+        c2.metric("Bearish",  f"{st_d['bearish_pct']}%")
+        c3.metric("Messages", st_d["total_msgs"])
+        st.caption(f"Signal: **{st_d['signal']}**")
     else:
         st.caption(f"StockTwits: {st_d.get('note', 'Unavailable')}")
 
     st.divider()
-
-    # Fear & Greed detail
-    st.markdown("**😨 CNN Fear & Greed Index**")
+    st.markdown("**😨 Fear & Greed Index**")
     if fg.get("available"):
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Score",      f"{fg['score']}/100")
-        col2.metric("Label",      fg["label"])
-        col3.metric("vs Last Week", f"{fg['prev_week']}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Score", f"{fg['score']}/100")
+        c2.metric("Label", fg["label"])
+        c3.metric("vs Last Week", f"{fg['prev_week']}")
         st.info(fg.get("context", ""))
-        st.caption(
-            f"Direction: {fg['direction']} | "
-            f"vs last month: {fg['prev_month']}"
-        )
-    else:
-        st.caption(f"Fear & Greed: {fg.get('note', 'Unavailable')}")
 
     st.divider()
-
-    # Google Trends detail
     st.markdown("**🔍 Google Trends**")
     if trends.get("available"):
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Current Interest", f"{trends['current']}/100")
-        col2.metric("4-Week Avg",        f"{trends['avg_4w']}")
-        col3.metric("12-Week Avg",        f"{trends['avg_12w']}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Current Interest", f"{trends['current']}/100")
+        c2.metric("4-Week Avg", f"{trends['avg_4w']}")
+        c3.metric("12-Week Avg", f"{trends['avg_12w']}")
         st.caption(trends["trend"])
-        st.caption("Note: 100 = peak search interest for this keyword. Relative scale only.")
-    else:
-        st.caption(f"Google Trends: {trends.get('note', 'Unavailable')}")
 
     st.divider()
-
-    # Polymarket
     st.markdown("**🎯 Polymarket Prediction Markets**")
     if poly.get("found") and poly.get("markets"):
         for market in poly["markets"][:3]:
             st.markdown(f"**{market['question']}**")
             for outcome, prob in market.get("outcomes", []):
-                color = (
-                    "green"  if prob > 60 else
-                    "red"    if prob < 40 else
-                    "orange"
-                )
+                color = "green" if prob > 60 else "red" if prob < 40 else "orange"
                 st.markdown(f"  :{color}[{outcome}: {prob}%]")
             if market.get("url"):
                 st.caption(f"[View on Polymarket]({market['url']})")
-    elif poly.get("available"):
-        st.caption(f"No active prediction markets found for {ticker}.")
     else:
-        st.caption(f"Polymarket: {poly.get('note', 'Unavailable')}")
+        st.caption("No active prediction markets found.")
+
+
+# ── INSIGHT RENDERING ─────────────────────────────────────────
+
+def render_geo_themes(geo: dict):
+    """Render geopolitical themes as a bar chart."""
+    themes  = geo.get("themes", {})
+    sectors = geo.get("sectors", {})
+
+    if themes:
+        st.markdown("**📰 Active Geopolitical Themes**")
+        theme_df = pd.DataFrame([
+            {"Theme": k, "Mentions": v["mentions"], "Sentiment": v["sentiment_label"]}
+            for k, v in list(themes.items())[:8]
+        ])
+        fig = px.bar(
+            theme_df, x="Mentions", y="Theme",
+            orientation="h",
+            color="Mentions",
+            color_continuous_scale="Blues",
+            template="plotly_dark",
+            height=300,
+        )
+        fig.update_layout(
+            title="News mention volume by theme",
+            margin=dict(l=20, r=20, t=40, b=20),
+            showlegend=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    if sectors:
+        st.markdown("**🏭 Sector Relevance Scores**")
+        sector_df = pd.DataFrame([
+            {"Sector": k, "Relevance": v}
+            for k, v in list(sectors.items())[:8]
+        ])
+        fig = px.bar(
+            sector_df, x="Relevance", y="Sector",
+            orientation="h",
+            color="Relevance",
+            color_continuous_scale="Teal",
+            template="plotly_dark",
+            height=300,
+        )
+        fig.update_layout(
+            title="Sector relevance (0-100, driven by active themes)",
+            margin=dict(l=20, r=20, t=40, b=20),
+            showlegend=False,
+            xaxis=dict(range=[0, 100]),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def render_screener_results(results: list):
+    """Render screener results as a comparison table and score chart."""
+    if not results:
+        st.caption("No screener results to display.")
+        return
+
+    st.markdown("**🏆 Top Screened Stocks**")
+
+    # Score comparison chart
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Base Score",
+        x=[r["ticker"] for r in results],
+        y=[r["composite"] for r in results],
+        marker_color="#065A82",
+    ))
+    fig.add_trace(go.Bar(
+        name="Geo Boost",
+        x=[r["ticker"] for r in results],
+        y=[r["geo_boost"] for r in results],
+        marker_color="#02C39A",
+    ))
+    fig.update_layout(
+        barmode="stack",
+        title="Composite Score by Stock (base + geopolitical boost)",
+        template="plotly_dark",
+        height=300,
+        margin=dict(l=20, r=20, t=50, b=30),
+        yaxis=dict(range=[0, 100]),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Summary table
+    table_data = []
+    for r in results:
+        table_data.append({
+            "Rank":       results.index(r) + 1,
+            "Ticker":     r["ticker"],
+            "Name":       r["name"][:28],
+            "Score":      f"{r['final_score']}/100",
+            "Price":      f"{r['price']} {r['currency']}",
+            "P/E":        r["pe_ratio"],
+            "RSI":        r["rsi"],
+            "Analyst":    r["analyst"],
+            "Sector":     r["sector"],
+        })
+
+    df = pd.DataFrame(table_data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Per-stock charts
+    st.markdown("**📊 Individual Stock Charts**")
+    cols = st.columns(min(len(results), 3))
+    for i, result in enumerate(results[:3]):
+        with cols[i]:
+            st.caption(f"**{result['ticker']}** — {result['final_score']}/100")
+            render_candlestick(result["ticker"])
 
 
 # ── SIDEBAR ──────────────────────────────────────────────────
 with st.sidebar:
     st.title("📈 Finance Research")
     st.caption("Llama 3.1 + yfinance — fully local")
-
     st.divider()
 
     st.markdown("### ⚠️ Disclaimer")
     st.warning(
-    "**Research tool only — not financial advice.**\n\n"
-    "This tool provides publicly available market data and "
-    "AI-generated research summaries for informational purposes. "
-    "It does not constitute investment advice, a personal recommendation, "
-    "or a solicitation to buy or sell any security. "
-    "The tool is not FCA-authorised and its output must not be relied "
-    "upon as the basis for any investment decision. "
-    "Always consult a qualified, FCA-authorised financial adviser."
-)
-
+        "**Research tool only.** Nothing here is financial advice. "
+        "Always consult an FCA-authorised advisor before investing."
+    )
     st.divider()
 
-    # Settings
     st.markdown("### ⚙️ Settings")
     include_sentiment = st.toggle(
         "🧠 Include Sentiment Analysis",
         value=True,
-        help=(
-            "Adds ~10s but includes StockTwits, "
-            "Fear & Greed, Google Trends and Polymarket"
-        ),
+        help="Adds ~10s. Includes StockTwits, Fear & Greed, Google Trends, Polymarket",
     )
-
     st.divider()
 
-    # Watchlist
     st.markdown("### 👀 Watchlist")
     alerts = check_alerts()
     if alerts:
-        st.markdown("**🔔 Active Alerts**")
         for alert in alerts:
             if alert["type"] == "above":
                 st.success(alert["message"])
@@ -333,12 +386,12 @@ with st.sidebar:
     wl_data = get_watchlist_snapshot()
     if wl_data:
         for row in wl_data:
-            col1, col2 = st.columns([3, 1])
-            col1.markdown(
+            c1, c2 = st.columns([3, 1])
+            c1.markdown(
                 f"**{row['ticker']}** — {row['price']} {row['currency']}\n\n"
                 f"*{row['recommendation']}*"
             )
-            if col2.button("🗑️", key=f"rm_{row['ticker']}"):
+            if c2.button("🗑️", key=f"rm_{row['ticker']}"):
                 remove_from_watchlist(row["ticker"])
                 st.rerun()
     else:
@@ -359,29 +412,30 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-
-    # Example questions
     st.markdown("### 💡 Try These")
     examples = [
+        # Insight queries
+        "What 5 stocks have the best potential given geopolitics?",
+        "Top sectors based on current global situation",
+        "Which stocks benefit from current tensions?",
+        "Best opportunities given the macro environment",
+        # Single stock queries
         "Analyse Apple for me",
         "What is NVIDIA's current position?",
-        "Compare Tesla and Ford",
-        "What is Lloyds Bank current price?",
         "Is HSBC overbought or oversold?",
+        "Compare Tesla and Ford",
         "Explain what RSI means",
-        "What is dollar cost averaging?",
-        "What do analysts think about Microsoft?",
     ]
     for ex in examples:
         if st.button(ex, use_container_width=True, key=f"ex_{ex}"):
             st.session_state.pending_question = ex
 
 
-# ── MAIN AREA ────────────────────────────────────────────────
+# ── MAIN AREA ─────────────────────────────────────────────────
 st.title("📈 Finance Research Assistant")
 st.caption(
-    "Ask questions about stocks, markets, ratios, and strategies. "
-    "Live data + sentiment fetched per query."
+    "Single stock analysis, or ask for market insights — "
+    "live data and geopolitical context fetched per query."
 )
 st.info(
     "🔒 Fully local — your questions never leave your machine. "
@@ -389,45 +443,57 @@ st.info(
     icon="🔒",
 )
 
-# ── SESSION STATE ─────────────────────────────────────────────
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "pending_question" not in st.session_state:
     st.session_state.pending_question = None
 
-# ── RENDER HISTORY ────────────────────────────────────────────
+# ── RENDER HISTORY ─────────────────────────────────────────────
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-        if msg.get("tickers"):
+        if msg.get("is_insight") and msg.get("geo_context"):
+            with st.expander("🌍 Geopolitical Intelligence"):
+                tab1, tab2 = st.tabs(["📊 Themes & Sectors", "📰 Headlines"])
+                with tab1:
+                    render_geo_themes(msg["geo_context"])
+                with tab2:
+                    for h in msg["geo_context"].get("headlines", [])[:10]:
+                        emoji = "🟢" if h["score"] > 0.1 else "🔴" if h["score"] < -0.1 else "⚪"
+                        st.markdown(f"{emoji} **{h['source']}** — {h['title']}")
+
+            if msg.get("screener_results"):
+                with st.expander("🏆 Screener Results", expanded=True):
+                    render_screener_results(msg["screener_results"])
+
+        elif msg.get("tickers"):
             st.caption(f"📊 Data fetched for: {', '.join(msg['tickers'])}")
             for ticker in msg["tickers"]:
                 with st.expander(f"📊 Analysis — {ticker}"):
-                    tab1, tab2, tab3 = st.tabs([
-                        "📈 Price Charts", "🧠 Sentiment", "📡 Raw Data"
-                    ])
+                    tab1, tab2, tab3 = st.tabs(["📈 Price", "🧠 Sentiment", "📡 Raw"])
                     with tab1:
                         render_candlestick(ticker)
                         render_rsi(ticker)
                     with tab2:
-                        render_sentiment_section(
-                            msg.get("sentiment_data", {}), ticker
-                        )
+                        render_sentiment_section(msg.get("sentiment_data", {}), ticker)
                     with tab3:
                         st.code(msg.get("live_data", ""))
 
         if msg.get("sources"):
-            with st.expander("📚 Knowledge Base Sources"):
+            with st.expander("📚 Sources"):
                 for src in msg["sources"]:
                     st.markdown(f"- {src}")
 
-# ── HANDLE SIDEBAR BUTTONS ───────────────────────────────────
+# ── HANDLE SIDEBAR BUTTONS ─────────────────────────────────────
 pending = st.session_state.pop("pending_question", None)
 
-# ── CHAT INPUT ───────────────────────────────────────────────
+# ── CHAT INPUT ──────────────────────────────────────────────────
 question = (
-    st.chat_input("e.g. Analyse Apple for me, or what is a P/E ratio?")
+    st.chat_input(
+        "e.g. 'What 5 stocks suit the current geopolitical situation?' "
+        "or 'Analyse Apple for me'"
+    )
     or pending
 )
 
@@ -437,58 +503,63 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        with st.spinner(
-            "Fetching live data, calculating signals"
-            + (", gathering sentiment..." if include_sentiment else "...")
-        ):
+        with st.spinner("Fetching news, screening stocks, generating report..."):
             result = ask(retriever_llm, question, include_sentiment=include_sentiment)
 
         st.markdown(result["answer"])
 
-        if result.get("tickers"):
-            st.caption(f"📊 Data fetched for: {', '.join(result['tickers'])}")
+        # Insight result rendering
+        if result.get("is_insight"):
+            if result.get("geo_context"):
+                with st.expander("🌍 Geopolitical Intelligence", expanded=True):
+                    tab1, tab2 = st.tabs(["📊 Themes & Sectors", "📰 Headlines"])
+                    with tab1:
+                        render_geo_themes(result["geo_context"])
+                    with tab2:
+                        for h in result["geo_context"].get("headlines", [])[:10]:
+                            emoji = "🟢" if h["score"] > 0.1 else "🔴" if h["score"] < -0.1 else "⚪"
+                            st.markdown(f"{emoji} **{h['source']}** — {h['title']}")
 
+            if result.get("screener_results"):
+                with st.expander("🏆 Screener Results", expanded=True):
+                    render_screener_results(result["screener_results"])
+
+        # Standard single stock rendering
+        elif result.get("tickers"):
+            st.caption(f"📊 Data fetched for: {', '.join(result['tickers'])}")
             for ticker in result["tickers"]:
                 with st.expander(f"📊 Full Analysis — {ticker}", expanded=True):
-                    tab1, tab2, tab3 = st.tabs([
-                        "📈 Price Charts", "🧠 Sentiment", "📡 Raw Data"
-                    ])
-
+                    tab1, tab2, tab3 = st.tabs(["📈 Price", "🧠 Sentiment", "📡 Raw"])
                     with tab1:
-                        col1, col2 = st.columns([2, 1])
-                        with col1:
+                        c1, c2 = st.columns([2, 1])
+                        with c1:
                             render_candlestick(ticker)
-                        with col2:
+                        with c2:
                             score_match = re.search(
                                 r"Composite Research Score: (\d+\.?\d*)/100",
                                 result.get("live_data", "")
                             )
                             if score_match:
-                                render_gauge(
-                                    float(score_match.group(1)),
-                                    f"{ticker} Research Score"
-                                )
+                                render_gauge(float(score_match.group(1)), f"{ticker} Score")
                         render_rsi(ticker)
-
                     with tab2:
-                        render_sentiment_section(
-                            result.get("sentiment_data", {}),
-                            ticker,
-                        )
-
+                        render_sentiment_section(result.get("sentiment_data", {}), ticker)
                     with tab3:
                         st.code(result.get("live_data", ""))
 
         if result.get("sources"):
-            with st.expander("📚 Knowledge Base Sources"):
+            with st.expander("📚 Sources"):
                 for src in result["sources"]:
                     st.markdown(f"- {src}")
 
     st.session_state.messages.append({
-        "role":           "assistant",
-        "content":        result["answer"],
-        "sources":        result.get("sources", []),
-        "tickers":        result.get("tickers", []),
-        "live_data":      result.get("live_data", ""),
-        "sentiment_data": result.get("sentiment_data", {}),
+        "role":             "assistant",
+        "content":          result["answer"],
+        "sources":          result.get("sources", []),
+        "tickers":          result.get("tickers", []),
+        "live_data":        result.get("live_data", ""),
+        "sentiment_data":   result.get("sentiment_data", {}),
+        "screener_results": result.get("screener_results", []),
+        "geo_context":      result.get("geo_context"),
+        "is_insight":       result.get("is_insight", False),
     })

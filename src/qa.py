@@ -5,6 +5,8 @@ from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from live_data import detect_tickers, format_live_context
+from screener import screen_stocks, format_screener_results, is_insight_query
+from geopolitical import get_geopolitical_context, format_geopolitical_context
 from config import (
     OLLAMA_MODEL,
     EMBEDDING_MODEL,
@@ -12,72 +14,69 @@ from config import (
     TOP_K_RESULTS,
 )
 
-# ── STRUCTURED RESEARCH PROMPT ──────────────────────────────
+# ── STANDARD STOCK RESEARCH PROMPT ──────────────────────────
 FINANCE_PROMPT = PromptTemplate(
     input_variables=["context", "live_data", "question"],
     template="""
-You are a financial research assistant. You surface factual
-data and structured analysis to help users understand stocks.
+You are a financial research assistant. Your role is to
+surface factual, structured analysis to help users
+understand stocks and markets.
 
 You are NOT a financial advisor. You must NEVER directly
-tell someone to buy or sell a stock. Instead, present
-balanced facts and let the user decide.
+tell someone to buy or sell a stock. Always present
+both sides equally. Let the data speak.
 
-──────────────────────────────────────────────────────────
-RESPONSE FORMAT — always use this structure for stock questions:
-──────────────────────────────────────────────────────────
+────────────────────────────────────────────────────
+USE THIS STRUCTURE FOR ALL STOCK QUESTIONS:
+────────────────────────────────────────────────────
 
 ## [TICKER] — [Company Name] Research Summary
 
 **At a Glance**
-2-sentence overview of what the company does and its
-current market position.
+2 sentences: what the company does and current position.
 
 **Fundamental Picture**
-Comment specifically on:
-- Current price vs 52-week range (where in the range?)
-- P/E ratio vs typical sector average (over/undervalued?)
-- Revenue and profit margin trend
+- Current price vs 52-week range
+- P/E vs typical sector average
+- Revenue and profit margin
 - Debt levels and ROE
 - Dividend if applicable
 
 **Technical Picture**
-Interpret the signals:
-- RSI reading and what it historically suggests
-- MACD signal (bullish or bearish momentum)
-- Moving average position (trend direction)
-- Bollinger Band position (volatility context)
-- Volume signal (conviction behind the move)
+- RSI: number and implication
+- MACD: bullish or bearish momentum
+- Moving averages: trend direction
+- Bollinger Bands: volatility context
+- Volume: conviction behind recent move
+
+**Public Sentiment**
+Interpret all sentiment data provided including
+StockTwits, Fear & Greed, Google Trends, Polymarket.
+Note: high bullish sentiment can signal a crowded trade.
 
 **Analyst View**
-- State the analyst consensus clearly
-- State the analyst price target vs current price
-- Note any gap between current price and target
+- Consensus rating and price target
+- Gap between current price and target
 
-**Composite Research Score: [X]/100**
-Explain what the score means in plain English based
-on the breakdown provided. Do not hide the score.
+**Research Scores**
+State both scores clearly with brief explanation.
 
 **Factors That May Interest Buyers**
-List exactly 3 factual, data-backed positives.
-Each must reference a specific number from the live data.
+Exactly 3 positives with specific numbers.
 
 **Factors That Suggest Caution**
-List exactly 3 factual, data-backed risks or concerns.
-Each must reference a specific number from the live data.
+Exactly 3 risks with specific numbers.
 
-**Summary**
-One balanced paragraph summarising the overall picture.
-Do not lean bullish or bearish — present both sides equally.
-End with: "This is research information only, not financial
-advice. The decision is entirely yours."
+**Balanced Summary**
+One balanced paragraph. Both sides equally weighted.
+End: "This is research information only — not financial
+advice. The decision is entirely yours to make."
 
-──────────────────────────────────────────────────────────
-For concept questions (not stock-specific), answer clearly
-and factually from the knowledge base context provided.
-──────────────────────────────────────────────────────────
+────────────────────────────────────────────────────
+For concept/education questions answer from knowledge base.
+────────────────────────────────────────────────────
 
-Live Market Data (fetched right now):
+Live Market Data + Technicals + Sentiment:
 {live_data}
 
 Knowledge Base Context:
@@ -89,15 +88,90 @@ Research Summary:
 """
 )
 
+# ── MARKET INSIGHT PROMPT ────────────────────────────────────
+INSIGHT_PROMPT = PromptTemplate(
+    input_variables=["geo_context", "screener_results", "context", "question"],
+    template="""
+You are a financial market intelligence assistant.
+Based on the current geopolitical landscape and
+a systematic stock screen, you will present a
+structured market insight report.
+
+You are NOT a financial advisor. These are research
+insights only — not buy recommendations.
+
+Always present reasoning transparently. Every stock
+mentioned must be justified by specific data.
+
+────────────────────────────────────────────────────
+RESPONSE STRUCTURE:
+────────────────────────────────────────────────────
+
+## Market Intelligence Report
+*Generated: [today's date]*
+
+**Current Geopolitical Landscape**
+Summarise the 3-4 most significant active themes from
+the news data. Be specific — name the events driving
+each theme and which sectors they affect.
+
+**Sectors Under the Spotlight**
+For the top 3 sectors identified, explain in one
+sentence WHY each is relevant right now based on
+the specific geopolitical dynamics.
+
+**Screened Stocks — Highest Composite Signals**
+For each of the top 5 stocks from the screener:
+
+### [RANK]. [TICKER] — [Company Name] ([Score]/100)
+- **Why it surfaces now:** Link explicitly to a
+  geopolitical theme from the news
+- **Fundamental snapshot:** Key metrics (P/E, market
+  cap, dividend) in 2 sentences
+- **Technical position:** RSI, trend, MACD in 1 sentence
+- **Analyst consensus:** Rating and price target
+- **Key risk:** One specific data-backed concern
+
+**Important Caveats**
+- Geopolitical situations change rapidly
+- These stocks surfaced based on systematic scoring —
+  not qualitative deep research
+- Sector relevance today may reverse tomorrow
+- Always conduct your own due diligence
+
+**Closing Disclaimer**
+This report is generated by an AI research tool for
+informational purposes only. It does not constitute
+investment advice or a personal recommendation.
+Past performance does not guarantee future results.
+Always consult an FCA-authorised financial advisor.
+
+────────────────────────────────────────────────────
+
+Geopolitical Context:
+{geo_context}
+
+Screener Results:
+{screener_results}
+
+Financial Knowledge Base:
+{context}
+
+Question: {question}
+
+Market Intelligence Report:
+"""
+)
+
 DISCLAIMER = (
     "\n\n---\n"
-    "⚠️ **Legal Disclaimer:** This output is generated by an AI "
-    "research tool for informational purposes only. It does not "
-    "constitute financial advice, a recommendation to buy or sell "
-    "any security, or a solicitation of any investment decision. "
-    "Past performance does not guarantee future results. Always "
-    "consult a qualified, FCA-authorised financial advisor before "
-    "making any investment decision."
+    "⚠️ **Legal Disclaimer:** This output is generated by a local AI "
+    "research tool for informational and educational purposes only. "
+    "It does not constitute financial advice, a recommendation to buy "
+    "or sell any security, or a solicitation of any investment decision. "
+    "Past performance does not guarantee future results. Markets can "
+    "move against any position. Always consult a qualified, "
+    "FCA-authorised financial advisor before making any investment decision."
 )
 
 
@@ -106,54 +180,81 @@ def format_docs(docs: list) -> str:
 
 
 def load_qa_chain():
-    """Load embeddings, vector store and LLM. Returns (retriever, llm)."""
+    """Load embeddings, vector store and LLM."""
     embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
-
     vectorstore = Chroma(
         persist_directory=CHROMA_DB_PATH,
         embedding_function=embeddings,
     )
-
     retriever = vectorstore.as_retriever(
         search_type="similarity",
         search_kwargs={"k": TOP_K_RESULTS},
     )
-
     llm = OllamaLLM(model=OLLAMA_MODEL, temperature=0.1)
-
     return retriever, llm
 
 
 def ask(
     retriever_llm_tuple,
-    question:           str,
-    include_sentiment:  bool = True,
+    question:          str,
+    include_sentiment: bool = True,
 ) -> dict:
     """
-    Full pipeline:
-    1. Detect tickers
-    2. Fetch live data + technicals + composite scores + sentiment
-    3. Retrieve knowledge base chunks
-    4. Build structured prompt and invoke LLM
-    5. Return answer + sources + metadata
+    Route query to either:
+    - Single stock research pipeline (standard)
+    - Market insight pipeline (screener + geopolitical)
     """
     retriever, llm = retriever_llm_tuple
 
-    # Step 1 — detect tickers
-    tickers = detect_tickers(question)
+    # Retrieve knowledge base context for both pipelines
+    source_docs = retriever.invoke(question)
+    sources     = list({doc.metadata.get("source", "Unknown") for doc in source_docs})
+    context     = format_docs(source_docs)
 
-    # Step 2 — fetch live data + sentiment
+    # ── INSIGHT PIPELINE ──────────────────────────────────
+    if is_insight_query(question):
+        print("  📡 Insight query detected — running screener pipeline")
+
+        # Step 1 — geopolitical context
+        geo = get_geopolitical_context()
+        geo_context_str = format_geopolitical_context(geo)
+
+        # Step 2 — screen relevant stocks
+        tickers_to_screen = geo.get("relevant_tickers", [])
+        results = screen_stocks(
+            tickers=tickers_to_screen,
+            top_n=5,
+            geopolitical_context=geo,
+        )
+        screener_str = format_screener_results(results, geo)
+
+        # Step 3 — LLM synthesis
+        prompt = INSIGHT_PROMPT.format(
+            geo_context=geo_context_str,
+            screener_results=screener_str,
+            context=context,
+            question=question,
+        )
+        answer = llm.invoke(prompt) + DISCLAIMER
+
+        return {
+            "answer":          answer,
+            "sources":         sources,
+            "tickers":         [r["ticker"] for r in results],
+            "live_data":       screener_str,
+            "sentiment_data":  {},
+            "screener_results":results,
+            "geo_context":     geo,
+            "is_insight":      True,
+        }
+
+    # ── STANDARD SINGLE STOCK PIPELINE ───────────────────
+    tickers = detect_tickers(question)
     live_data_str, sentiment_data = format_live_context(
         tickers,
         include_sentiment=include_sentiment,
     )
 
-    # Step 3 — retrieve knowledge base
-    source_docs = retriever.invoke(question)
-    sources     = list({doc.metadata.get("source", "Unknown") for doc in source_docs})
-    context     = format_docs(source_docs)
-
-    # Step 4 — invoke LLM
     prompt = FINANCE_PROMPT.format(
         context=context,
         live_data=live_data_str,
@@ -162,9 +263,12 @@ def ask(
     answer = llm.invoke(prompt) + DISCLAIMER
 
     return {
-        "answer":         answer,
-        "sources":        sources,
-        "tickers":        tickers,
-        "live_data":      live_data_str,
-        "sentiment_data": sentiment_data,
+        "answer":          answer,
+        "sources":         sources,
+        "tickers":         tickers,
+        "live_data":       live_data_str,
+        "sentiment_data":  sentiment_data,
+        "screener_results":[],
+        "geo_context":     None,
+        "is_insight":      False,
     }
