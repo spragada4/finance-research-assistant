@@ -34,11 +34,11 @@ Sentiment          Sector scoring
 Composite          Stock screener
 score              Top N results
    ↓                   ↓
-        LLM synthesis (llama3.1 via Ollama)
-                ↓
-        Structured research report
-                ↓
-        Streamlit chat UI
+LLM synthesis (llama3.1 via Ollama)
+             ↓
+   Structured research report
+             ↓
+      Streamlit chat UI
 ```
 
 ---
